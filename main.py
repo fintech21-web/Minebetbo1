@@ -9,7 +9,7 @@ from telegram.ext import (
 from database import get_available_numbers, pick_number, get_all_bets
 
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 123456789  # replace with YOUR Telegram ID
+ADMIN_ID = 6826565670  # replace with YOUR Telegram ID
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
