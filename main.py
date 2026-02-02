@@ -7,18 +7,24 @@ from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    ContextTypes
+    MessageHandler,
+    ContextTypes,
+    filters,
 )
-ADMIN_ID = 6826565670  # ← replace with YOUR Telegram user ID
+
 # ================== CONFIG ==================
 TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = 6826565670  # ← replace with YOUR Telegram user ID
 DATA_FILE = "data.json"
 TOTAL_NUMBERS = 1500
 
 # ================== DATA HELPERS ==================
 def load_data():
     if not os.path.exists(DATA_FILE):
-        return {"picked_numbers": {}}
+        return {
+            "picked_numbers": {},
+            "pending_receipts": {}
+        }
     with open(DATA_FILE, "r") as f:
         return json.load(f)
 
@@ -35,7 +41,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Commands:\n"
         "📌 /numbers – View available numbers\n"
         "🎯 /pick <number> – Pick your number\n\n"
-        "✨ Play smart. First come, first served.",
+        "✨ First come, first served.",
         parse_mode="Markdown"
     )
 
@@ -50,7 +56,7 @@ async def numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     preview = ", ".join(available[:50])
-    more = "..." if len(available) > 50 else ""
+    more = " ..." if len(available) > 50 else ""
 
     await update.message.reply_text(
         f"🟢 *Available Numbers*\n\n"
@@ -75,15 +81,14 @@ async def pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     data = load_data()
-    picked_numbers = data["picked_numbers"]
 
-    if str(number) in picked_numbers:
+    if str(number) in data["picked_numbers"]:
         await update.message.reply_text("⛔ This number is already taken.")
         return
 
     user = update.message.from_user
 
-    picked_numbers[str(number)] = {
+    data["picked_numbers"][str(number)] = {
         "user_id": user.id,
         "username": user.username,
         "name": user.full_name,
@@ -93,37 +98,21 @@ async def pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data(data)
 
     await update.message.reply_text(
-        f"✅ *Number Reserved Successfully!*\n\n"
+        f"✅ *Number Reserved!*\n\n"
         f"🎯 Number: *{number}*\n"
         f"👤 Name: *{user.full_name}*\n\n"
-        f"💳 Please proceed with payment.\n"
-        f"📸 Send receipt after payment.\n\n"
-        f"✨ Your number is temporarily locked.",
+        f"💳 Please complete payment and send the receipt photo.",
         parse_mode="Markdown"
     )
 
-# ================== FLASK (Render Port Fix) ==================
-flask_app = Flask(__name__)
-
-@flask_app.route("/")
-def home():
-    return "Betting bot is running"
-
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    flask_app.run(host="0.0.0.0", port=port)
-
-threading.Thread(target=run_flask, daemon=True).start()
-
+# ================== RECEIPT HANDLER ==================
 async def receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.photo:
+        return
+
     user = update.message.from_user
     data = load_data()
 
-    if not update.message.photo:
-        await update.message.reply_text("❌ Please send a photo of the payment receipt.")
-        return
-
-    # find user's picked number
     picked_number = None
     for num, info in data["picked_numbers"].items():
         if info["user_id"] == user.id:
@@ -131,14 +120,13 @@ async def receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
 
     if not picked_number:
-        await update.message.reply_text("⚠️ You have not picked any number yet.")
+        await update.message.reply_text("⚠️ You have not picked a number yet.")
         return
 
-    # save receipt
     photo = update.message.photo[-1]
+
     data["pending_receipts"][picked_number] = {
         "user_id": user.id,
-        "username": user.username,
         "name": user.full_name,
         "file_id": photo.file_id,
         "submitted_at": datetime.utcnow().isoformat()
@@ -147,38 +135,33 @@ async def receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data(data)
 
     await update.message.reply_text(
-        "📸 *Receipt received!*\n\n"
-        "⏳ Awaiting admin approval.\n"
-        "You will be notified once approved.",
+        "📸 *Receipt received.*\n⏳ Waiting for admin approval.",
         parse_mode="Markdown"
     )
 
-    # notify admin
     await context.bot.send_photo(
         chat_id=ADMIN_ID,
         photo=photo.file_id,
         caption=(
-            f"🧾 *New Payment Receipt*\n\n"
+            f"🧾 *New Payment*\n\n"
             f"👤 {user.full_name}\n"
             f"🎯 Number: {picked_number}\n\n"
-            f"Approve: /approve {picked_number}\n"
-            f"Reject: /reject {picked_number}"
+            f"/approve {picked_number}\n"
+            f"/reject {picked_number}"
         ),
         parse_mode="Markdown"
     )
+
+# ================== ADMIN COMMANDS ==================
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != ADMIN_ID:
-        return
-
-    if not context.args:
-        await update.message.reply_text("Usage: /approve <number>")
         return
 
     number = context.args[0]
     data = load_data()
 
     if number not in data["pending_receipts"]:
-        await update.message.reply_text("❌ No pending receipt for this number.")
+        await update.message.reply_text("❌ No pending receipt.")
         return
 
     receipt = data["pending_receipts"].pop(number)
@@ -188,11 +171,7 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(
         chat_id=receipt["user_id"],
-        text=(
-            f"🎉 *Payment Approved!*\n\n"
-            f"🎯 Your number *{number}* is now FINAL.\n"
-            f"Good luck 🍀"
-        ),
+        text=f"🎉 *Payment approved!*\nYour number *{number}* is confirmed.",
         parse_mode="Markdown"
     )
 
@@ -200,35 +179,47 @@ async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != ADMIN_ID:
         return
 
-    if not context.args:
-        await update.message.reply_text("Usage: /reject <number>")
-        return
-
     number = context.args[0]
     data = load_data()
 
     if number not in data["pending_receipts"]:
-        await update.message.reply_text("❌ No pending receipt for this number.")
+        await update.message.reply_text("❌ No pending receipt.")
         return
 
     receipt = data["pending_receipts"].pop(number)
     data["picked_numbers"].pop(number, None)
     save_data(data)
 
-    await update.message.reply_text(f"❌ Number {number} rejected and released.")
+    await update.message.reply_text(f"❌ Number {number} rejected.")
 
     await context.bot.send_message(
         chat_id=receipt["user_id"],
         text="❌ Payment rejected. Your number has been released."
-)
+    )
+
+# ================== FLASK (Render keep-alive) ==================
+flask_app = Flask(__name__)
+
+@flask_app.route("/")
+def home():
+    return "Betting bot is running"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
+
+threading.Thread(target=run_flask, daemon=True).start()
 
 # ================== START BOT ==================
-print("🎰 Betting bot starting...")
+if __name__ == "__main__":
+    print("🎰 Betting bot starting...")
+    application = ApplicationBuilder().token(TOKEN).build()
 
-app = ApplicationBuilder().token(TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("numbers", numbers))
-app.add_handler(CommandHandler("pick", pick))
-app.add_handler(CommandHandler("approve", approve))
-app.add_handler(CommandHandler("reject", reject))
-app.run_polling()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("numbers", numbers))
+    application.add_handler(CommandHandler("pick", pick))
+    application.add_handler(CommandHandler("approve", approve))
+    application.add_handler(CommandHandler("reject", reject))
+    application.add_handler(MessageHandler(filters.PHOTO, receipt))
+
+    application.run_polling(drop_pending_updates=True)
