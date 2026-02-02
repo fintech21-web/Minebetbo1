@@ -219,7 +219,8 @@ async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(
         chat_id=receipt["user_id"],
-        text="❌ Payment rejected. Your number has been released
+        text="❌ Payment rejected. Your number has been released."
+)
 
 # ================== START BOT ==================
 print("🎰 Betting bot starting...")
