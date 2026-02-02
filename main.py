@@ -115,6 +115,58 @@ def run_flask():
 
 threading.Thread(target=run_flask, daemon=True).start()
 
+async def receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user
+    data = load_data()
+
+    if not update.message.photo:
+        await update.message.reply_text("❌ Please send a photo of the payment receipt.")
+        return
+
+    # find user's picked number
+    picked_number = None
+    for num, info in data["picked_numbers"].items():
+        if info["user_id"] == user.id:
+            picked_number = num
+            break
+
+    if not picked_number:
+        await update.message.reply_text("⚠️ You have not picked any number yet.")
+        return
+
+    # save receipt
+    photo = update.message.photo[-1]
+    data["pending_receipts"][picked_number] = {
+        "user_id": user.id,
+        "username": user.username,
+        "name": user.full_name,
+        "file_id": photo.file_id,
+        "submitted_at": datetime.utcnow().isoformat()
+    }
+
+    save_data(data)
+
+    await update.message.reply_text(
+        "📸 *Receipt received!*\n\n"
+        "⏳ Awaiting admin approval.\n"
+        "You will be notified once approved.",
+        parse_mode="Markdown"
+    )
+
+    # notify admin
+    await context.bot.send_photo(
+        chat_id=ADMIN_ID,
+        photo=photo.file_id,
+        caption=(
+            f"🧾 *New Payment Receipt*\n\n"
+            f"👤 {user.full_name}\n"
+            f"🎯 Number: {picked_number}\n\n"
+            f"Approve: /approve {picked_number}\n"
+            f"Reject: /reject {picked_number}"
+        ),
+        parse_mode="Markdown"
+    )
+
 # ================== START BOT ==================
 print("🎰 Betting bot starting...")
 
