@@ -9,7 +9,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes
 )
-
+ADMIN_ID = 6826565670  # ← replace with YOUR Telegram user ID
 # ================== CONFIG ==================
 TOKEN = os.getenv("BOT_TOKEN")
 DATA_FILE = "data.json"
