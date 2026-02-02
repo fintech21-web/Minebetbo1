@@ -166,6 +166,60 @@ async def receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ),
         parse_mode="Markdown"
     )
+async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id != ADMIN_ID:
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /approve <number>")
+        return
+
+    number = context.args[0]
+    data = load_data()
+
+    if number not in data["pending_receipts"]:
+        await update.message.reply_text("❌ No pending receipt for this number.")
+        return
+
+    receipt = data["pending_receipts"].pop(number)
+    save_data(data)
+
+    await update.message.reply_text(f"✅ Number {number} approved.")
+
+    await context.bot.send_message(
+        chat_id=receipt["user_id"],
+        text=(
+            f"🎉 *Payment Approved!*\n\n"
+            f"🎯 Your number *{number}* is now FINAL.\n"
+            f"Good luck 🍀"
+        ),
+        parse_mode="Markdown"
+    )
+
+async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id != ADMIN_ID:
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /reject <number>")
+        return
+
+    number = context.args[0]
+    data = load_data()
+
+    if number not in data["pending_receipts"]:
+        await update.message.reply_text("❌ No pending receipt for this number.")
+        return
+
+    receipt = data["pending_receipts"].pop(number)
+    data["picked_numbers"].pop(number, None)
+    save_data(data)
+
+    await update.message.reply_text(f"❌ Number {number} rejected and released.")
+
+    await context.bot.send_message(
+        chat_id=receipt["user_id"],
+        text="❌ Payment rejected. Your number has been released
 
 # ================== START BOT ==================
 print("🎰 Betting bot starting...")
