@@ -228,5 +228,6 @@ app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("numbers", numbers))
 app.add_handler(CommandHandler("pick", pick))
-
+app.add_handler(CommandHandler("approve", approve))
+app.add_handler(CommandHandler("reject", reject))
 app.run_polling()
