@@ -46,7 +46,7 @@ def init_numbers(data):
     for i in range(1, TOTAL_NUMBERS + 1):
         data["numbers"].setdefault(
             str(i),
-            {"status": "available", "user_id": None, "name": None}
+            {"status": "available", "user_id": None, "name": None, "reserved_at": None}
         )
 
 # ================== START ==================
@@ -104,6 +104,29 @@ async def numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
+# ================== REFRESH KEYBOARD ==================
+async def refresh_chunk_keyboard(bot, start_chunk, end_chunk):
+    data = load_data()
+    keyboard, row = [], []
+    for n in range(start_chunk, end_chunk + 1):
+        n_info = data["numbers"][str(n)]
+        if n_info["status"] == "approved":
+            text = f"🔴 {n}"
+            cb = "taken"
+        elif n_info["status"] == "reserved":
+            text = f"🟡 {n}"
+            cb = "taken"
+        else:
+            text = f"🟢 {n}"
+            cb = f"pick_{n}"
+        row.append(InlineKeyboardButton(text, callback_data=cb))
+        if len(row) == 5:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    return InlineKeyboardMarkup(keyboard)
+
 # ================== HANDLE NUMBER TAP ==================
 async def pick_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -135,33 +158,11 @@ async def pick_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     num_int = int(number)
     start_chunk = ((num_int - 1) // CHUNK_SIZE) * CHUNK_SIZE + 1
     end_chunk = min(start_chunk + CHUNK_SIZE - 1, TOTAL_NUMBERS)
-    chunk_numbers = list(range(start_chunk, end_chunk + 1))
-
-    keyboard, row = [], []
-
-    for n in chunk_numbers:
-        n_info = data["numbers"][str(n)]
-        if n_info["status"] == "approved":
-            text = f"🔴 {n}"
-            cb = "taken"
-        elif n_info["status"] == "reserved":
-            text = f"🟡 {n}"
-            cb = "taken"
-        else:
-            text = f"🟢 {n}"
-            cb = f"pick_{n}"
-
-        row.append(InlineKeyboardButton(text, callback_data=cb))
-        if len(row) == 5:
-            keyboard.append(row)
-            row = []
-
-    if row:
-        keyboard.append(row)
+    keyboard_markup = await refresh_chunk_keyboard(context.bot, start_chunk, end_chunk)
 
     await query.message.edit_text(
         f"📄 *Numbers {start_chunk} – {end_chunk}*",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=keyboard_markup,
         parse_mode="Markdown"
     )
 
@@ -192,8 +193,9 @@ async def receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ You have no reserved numbers.")
         return
 
+    photo = update.message.photo[-1]
+
     for number in reserved_numbers:
-        photo = update.message.photo[-1]
         data["pending_receipts"][number] = {
             "user_id": user.id,
             "name": user.full_name,
@@ -233,13 +235,21 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["numbers"][number]["status"] = "approved"
     save_data(data)
 
+    # Notify admin
     await update.message.reply_text(f"✅ Number {number} approved.")
 
+    # Notify user
     await context.bot.send_message(
         chat_id=receipt["user_id"],
         text=f"🎉 *Payment approved!*\nYour number *{number}* is confirmed.",
         parse_mode="Markdown",
     )
+
+# Refresh keyboard chunk after approval
+    num_int = int(number)
+    start_chunk = ((num_int - 1) // CHUNK_SIZE) * CHUNK_SIZE + 1
+    end_chunk = min(start_chunk + CHUNK_SIZE - 1, TOTAL_NUMBERS)
+    # Here we assume the user sees the keyboard via /numbers, can optionally edit messages if tracked
 
 async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != ADMIN_ID or not context.args:
@@ -253,14 +263,16 @@ async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "status": "available",
         "user_id": None,
         "name": None,
+        "reserved_at": None
     }
-
     save_data(data)
 
+    # Notify user
     if receipt:
         await context.bot.send_message(
             chat_id=receipt["user_id"],
-            text="❌ Payment rejected. Your number has been released."
+            text=f"❌ Payment rejected or number released. Number *{number}* is now available.",
+            parse_mode="Markdown",
         )
 
 # ================== AUTO-RELEASE TASK ==================
@@ -270,14 +282,27 @@ async def auto_release_reserved_numbers():
         changed = False
         now = datetime.utcnow()
         for number, info in data["numbers"].items():
-            if info["status"] == "reserved":
+            if info["status"] == "reserved" and info.get("reserved_at"):
                 reserved_at = datetime.fromisoformat(info["reserved_at"])
                 if now - reserved_at > timedelta(minutes=RESERVATION_LIMIT_MINUTES):
+                    # Notify user if exists
+                    if info["user_id"]:
+                        try:
+                            asyncio.create_task(
+                                app.bot.send_message(
+                                    chat_id=info["user_id"],
+                                    text=f"⏳ Your reserved number *{number}* was auto-released due to non-payment.",
+                                    parse_mode="Markdown",
+                                )
+                            )
+                        except Exception:
+                            pass
                     # Release the number
                     data["numbers"][number] = {
                         "status": "available",
                         "user_id": None,
                         "name": None,
+                        "reserved_at": None
                     }
                     changed = True
         if changed:
