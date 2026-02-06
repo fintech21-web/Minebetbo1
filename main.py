@@ -16,8 +16,8 @@ from telegram.ext import (
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 6826565670
 DATA_FILE = "data.json"
-TOTAL_NUMBERS = 1500
-CHUNK_SIZE = 150   # 10 messages × 150 numbers
+TOTAL_NUMBERS = 1000     # ✅ CHANGED FROM 1500 → 1000
+CHUNK_SIZE = 100         # 10 messages × 100 numbers
 
 # ================== DATA HELPERS ==================
 def load_data():
@@ -34,7 +34,7 @@ def save_data(data):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎰 *WELCOME TO THE PREMIUM BETTING GAME*\n\n"
-        "🔢 Numbers: *1 – 1500*\n"
+        "🔢 Numbers: *1 – 1000*\n"
         "⚠️ One number per person\n\n"
         "Commands:\n"
         "📌 /numbers – View numbers\n"
@@ -91,7 +91,7 @@ async def pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if number < 1 or number > TOTAL_NUMBERS:
-        await update.message.reply_text("❌ Number must be between 1–1500.")
+        await update.message.reply_text("❌ Number must be between 1–1000.")
         return
 
     data = load_data()
