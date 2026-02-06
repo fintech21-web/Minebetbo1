@@ -17,7 +17,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 6826565670
 DATA_FILE = "data.json"
 TOTAL_NUMBERS = 1500
-CHUNK_SIZE = 150  # 10 messages × 150 numbers
+CHUNK_SIZE = 150   # 10 messages × 150 numbers
 
 # ================== DATA HELPERS ==================
 def load_data():
@@ -29,14 +29,6 @@ def load_data():
 def save_data(data):
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=2)
-
-# ================== UTILS ==================
-def number_emoji(n: int) -> str:
-    mapping = {
-        "0": "0️⃣", "1": "1️⃣", "2": "2️⃣", "3": "3️⃣", "4": "4️⃣",
-        "5": "5️⃣", "6": "6️⃣", "7": "7️⃣", "8": "8️⃣", "9": "9️⃣"
-    }
-    return "".join(mapping[d] for d in str(n))
 
 # ================== BOT COMMANDS ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -55,36 +47,35 @@ async def numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     picked = set(map(int, data["picked_numbers"].keys()))
 
     all_numbers = list(range(1, TOTAL_NUMBERS + 1))
-
-    chunks = [
-        all_numbers[i:i + CHUNK_SIZE]
-        for i in range(0, TOTAL_NUMBERS, CHUNK_SIZE)
-    ]
+    chunks = [all_numbers[i:i + CHUNK_SIZE] for i in range(0, TOTAL_NUMBERS, CHUNK_SIZE)]
 
     for index, chunk in enumerate(chunks, start=1):
-        buttons = []
+        keyboard = []
         row = []
 
         for num in chunk:
             if num in picked:
-                text = f"🔴 {number_emoji(num)}"
+                text = f"🔴 {num}"
                 callback = "taken"
             else:
-                text = f"🟢 {number_emoji(num)}"
+                text = f"🟢 {num}"
                 callback = f"pick_{num}"
 
             row.append(InlineKeyboardButton(text, callback_data=callback))
 
             if len(row) == 5:
-                buttons.append(row)
+                keyboard.append(row)
                 row = []
 
         if row:
-            buttons.append(row)
+            keyboard.append(row)
+
+        start_n = (index - 1) * CHUNK_SIZE + 1
+        end_n = min(index * CHUNK_SIZE, TOTAL_NUMBERS)
 
         await update.message.reply_text(
-            f"📄 *Numbers {((index-1)*CHUNK_SIZE)+1} – {index*CHUNK_SIZE}*",
-            reply_markup=InlineKeyboardMarkup(buttons),
+            f"📄 *Numbers {start_n} – {end_n}*",
+            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown"
         )
 
@@ -123,7 +114,7 @@ async def pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ *Number Reserved*\n\n"
         f"🎯 Number: *{number}*\n"
         f"👤 Name: *{user.full_name}*\n\n"
-        f"📸 Send payment receipt.",
+        f"📸 Please send payment receipt.",
         parse_mode="Markdown"
     )
 
@@ -149,12 +140,13 @@ async def receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["pending_receipts"][picked_number] = {
         "user_id": user.id,
         "name": user.full_name,
-        "file_id": photo.file_id
+        "file_id": photo.file_id,
+        "submitted_at": datetime.utcnow().isoformat()
     }
 
     save_data(data)
 
-    await update.message.reply_text("📸 Receipt received. Waiting approval.")
+    await update.message.reply_text("📸 Receipt received. Waiting for admin approval.")
 
     await context.bot.send_photo(
         chat_id=ADMIN_ID,
@@ -174,6 +166,9 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != ADMIN_ID:
         return
 
+    if not context.args:
+        return
+
     number = context.args[0]
     data = load_data()
 
@@ -184,9 +179,11 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     receipt = data["pending_receipts"].pop(number)
     save_data(data)
 
+    await update.message.reply_text(f"✅ Number {number} approved.")
+
     await context.bot.send_message(
         chat_id=receipt["user_id"],
-        text=f"🎉 *Payment approved!*\nNumber *{number}* confirmed.",
+        text=f"🎉 *Payment approved!*\nYour number *{number}* is confirmed.",
         parse_mode="Markdown"
     )
 
@@ -194,17 +191,21 @@ async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != ADMIN_ID:
         return
 
+    if not context.args:
+        return
+
     number = context.args[0]
     data = load_data()
 
-    data["pending_receipts"].pop(number, None)
+    receipt = data["pending_receipts"].pop(number, None)
     data["picked_numbers"].pop(number, None)
     save_data(data)
 
-    await context.bot.send_message(
-        chat_id=data["picked_numbers"].get(number, {}).get("user_id", ADMIN_ID),
-        text="❌ Payment rejected. Number released."
-    )
+    if receipt:
+        await context.bot.send_message(
+            chat_id=receipt["user_id"],
+            text="❌ Payment rejected. Your number has been released."
+        )
 
 # ================== FLASK ==================
 flask_app = Flask(__name__)
@@ -214,12 +215,17 @@ def home():
     return "Betting bot running"
 
 def run_flask():
-    flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)), use_reloader=False)
+    flask_app.run(
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", 10000)),
+        use_reloader=False
+    )
 
 threading.Thread(target=run_flask, daemon=True).start()
 
 # ================== START ==================
 if __name__ == "__main__":
+    print("🎰 Betting bot starting...")
     application = ApplicationBuilder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
@@ -229,4 +235,4 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("reject", reject))
     application.add_handler(MessageHandler(filters.PHOTO, receipt))
 
-    application.run_polling()
+    application.run_polling(drop_pending_updates=True)
