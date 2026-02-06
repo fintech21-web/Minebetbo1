@@ -3,11 +3,16 @@ import json
 import threading
 from datetime import datetime
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -16,13 +21,22 @@ from telegram.ext import (
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 6826565670
 DATA_FILE = "data.json"
-TOTAL_NUMBERS = 1000     # ✅ CHANGED FROM 1500 → 1000
-CHUNK_SIZE = 100         # 10 messages × 100 numbers
+
+TOTAL_NUMBERS = 1000
+CHUNK_SIZE = 100
+
+PRICE_TEXT = (
+    "💰 *Payment Instructions*\n\n"
+    "🏦 Bank: *CBE*\n"
+    "👤 Name: *YOUR NAME*\n"
+    "💳 Account: *1000XXXXXX*\n\n"
+    "📸 After payment, send the receipt photo here."
+)
 
 # ================== DATA HELPERS ==================
 def load_data():
     if not os.path.exists(DATA_FILE):
-        return {"picked_numbers": {}, "pending_receipts": {}}
+        return {"numbers": {}, "pending_receipts": {}}
     with open(DATA_FILE, "r") as f:
         return json.load(f)
 
@@ -30,38 +44,52 @@ def save_data(data):
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
-# ================== BOT COMMANDS ==================
+def init_numbers(data):
+    for i in range(1, TOTAL_NUMBERS + 1):
+        data["numbers"].setdefault(
+            str(i),
+            {"status": "available", "user_id": None, "name": None}
+        )
+
+# ================== START ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎰 *WELCOME TO THE PREMIUM BETTING GAME*\n\n"
         "🔢 Numbers: *1 – 1000*\n"
-        "⚠️ One number per person\n\n"
-        "Commands:\n"
-        "📌 /numbers – View numbers\n"
-        "🎯 /pick <number> – Pick your number",
+        "🟢 Available | 🟡 Reserved | 🔴 Taken\n\n"
+        "📌 Use /numbers to choose your number",
         parse_mode="Markdown"
     )
 
+# ================== SHOW NUMBERS ==================
 async def numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
-    picked = set(map(int, data["picked_numbers"].keys()))
+    init_numbers(data)
+    save_data(data)
 
     all_numbers = list(range(1, TOTAL_NUMBERS + 1))
-    chunks = [all_numbers[i:i + CHUNK_SIZE] for i in range(0, TOTAL_NUMBERS, CHUNK_SIZE)]
+    chunks = [
+        all_numbers[i:i + CHUNK_SIZE]
+        for i in range(0, TOTAL_NUMBERS, CHUNK_SIZE)
+    ]
 
-    for index, chunk in enumerate(chunks, start=1):
-        keyboard = []
-        row = []
+    for idx, chunk in enumerate(chunks, start=1):
+        keyboard, row = [], []
 
         for num in chunk:
-            if num in picked:
+            info = data["numbers"][str(num)]
+
+            if info["status"] == "approved":
                 text = f"🔴 {num}"
-                callback = "taken"
+                cb = "taken"
+            elif info["status"] == "reserved":
+                text = f"🟡 {num}"
+                cb = "taken"
             else:
                 text = f"🟢 {num}"
-                callback = f"pick_{num}"
+                cb = f"pick_{num}"
 
-            row.append(InlineKeyboardButton(text, callback_data=callback))
+            row.append(InlineKeyboardButton(text, callback_data=cb))
 
             if len(row) == 5:
                 keyboard.append(row)
@@ -70,8 +98,8 @@ async def numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if row:
             keyboard.append(row)
 
-        start_n = (index - 1) * CHUNK_SIZE + 1
-        end_n = min(index * CHUNK_SIZE, TOTAL_NUMBERS)
+        start_n = (idx - 1) * CHUNK_SIZE + 1
+        end_n = min(idx * CHUNK_SIZE, TOTAL_NUMBERS)
 
         await update.message.reply_text(
             f"📄 *Numbers {start_n} – {end_n}*",
@@ -79,42 +107,39 @@ async def numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
-async def pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❗ Usage: /pick <number>")
+# ================== HANDLE NUMBER TAP ==================
+async def pick_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if not query.data.startswith("pick_"):
         return
 
-    try:
-        number = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("❌ Invalid number.")
-        return
-
-    if number < 1 or number > TOTAL_NUMBERS:
-        await update.message.reply_text("❌ Number must be between 1–1000.")
-        return
+    number = query.data.split("_")[1]
+    user = query.from_user
 
     data = load_data()
+    info = data["numbers"].get(number)
 
-    if str(number) in data["picked_numbers"]:
-        await update.message.reply_text("⛔ Number already taken.")
+    if info["status"] != "available":
+        await query.message.reply_text("⛔ This number is not available.")
         return
 
-    user = update.message.from_user
-
-    data["picked_numbers"][str(number)] = {
+    # Reserve number
+    data["numbers"][number] = {
+        "status": "reserved",
         "user_id": user.id,
         "name": user.full_name,
-        "picked_at": datetime.utcnow().isoformat()
+        "reserved_at": datetime.utcnow().isoformat(),
     }
 
     save_data(data)
 
-    await update.message.reply_text(
+    await query.message.reply_text(
         f"✅ *Number Reserved*\n\n"
         f"🎯 Number: *{number}*\n"
         f"👤 Name: *{user.full_name}*\n\n"
-        f"📸 Please send payment receipt.",
+        f"{PRICE_TEXT}",
         parse_mode="Markdown"
     )
 
@@ -126,22 +151,25 @@ async def receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     data = load_data()
 
-    picked_number = next(
-        (n for n, v in data["picked_numbers"].items() if v["user_id"] == user.id),
+    number = next(
+        (
+            n for n, v in data["numbers"].items()
+            if v["user_id"] == user.id and v["status"] == "reserved"
+        ),
         None
     )
 
-    if not picked_number:
-        await update.message.reply_text("⚠️ Pick a number first.")
+    if not number:
+        await update.message.reply_text("⚠️ You have no reserved number.")
         return
 
     photo = update.message.photo[-1]
 
-    data["pending_receipts"][picked_number] = {
+    data["pending_receipts"][number] = {
         "user_id": user.id,
         "name": user.full_name,
         "file_id": photo.file_id,
-        "submitted_at": datetime.utcnow().isoformat()
+        "submitted_at": datetime.utcnow().isoformat(),
     }
 
     save_data(data)
@@ -154,19 +182,16 @@ async def receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption=(
             f"🧾 *Payment Pending*\n\n"
             f"👤 {user.full_name}\n"
-            f"🎯 Number: {picked_number}\n\n"
-            f"/approve {picked_number}\n"
-            f"/reject {picked_number}"
+            f"🎯 Number: {number}\n\n"
+            f"/approve {number}\n"
+            f"/reject {number}"
         ),
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
 
 # ================== ADMIN ==================
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != ADMIN_ID:
-        return
-
-    if not context.args:
+    if update.message.from_user.id != ADMIN_ID or not context.args:
         return
 
     number = context.args[0]
@@ -177,6 +202,7 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     receipt = data["pending_receipts"].pop(number)
+    data["numbers"][number]["status"] = "approved"
     save_data(data)
 
     await update.message.reply_text(f"✅ Number {number} approved.")
@@ -184,21 +210,23 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(
         chat_id=receipt["user_id"],
         text=f"🎉 *Payment approved!*\nYour number *{number}* is confirmed.",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
 
 async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != ADMIN_ID:
-        return
-
-    if not context.args:
+    if update.message.from_user.id != ADMIN_ID or not context.args:
         return
 
     number = context.args[0]
     data = load_data()
 
     receipt = data["pending_receipts"].pop(number, None)
-    data["picked_numbers"].pop(number, None)
+    data["numbers"][number] = {
+        "status": "available",
+        "user_id": None,
+        "name": None,
+    }
+
     save_data(data)
 
     if receipt:
@@ -218,21 +246,21 @@ def run_flask():
     flask_app.run(
         host="0.0.0.0",
         port=int(os.getenv("PORT", 10000)),
-        use_reloader=False
+        use_reloader=False,
     )
 
 threading.Thread(target=run_flask, daemon=True).start()
 
-# ================== START ==================
+# ================== START BOT ==================
 if __name__ == "__main__":
     print("🎰 Betting bot starting...")
-    application = ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).build()
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("numbers", numbers))
-    application.add_handler(CommandHandler("pick", pick))
-    application.add_handler(CommandHandler("approve", approve))
-    application.add_handler(CommandHandler("reject", reject))
-    application.add_handler(MessageHandler(filters.PHOTO, receipt))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("numbers", numbers))
+    app.add_handler(CallbackQueryHandler(pick_number))
+    app.add_handler(CommandHandler("approve", approve))
+    app.add_handler(CommandHandler("reject", reject))
+    app.add_handler(MessageHandler(filters.PHOTO, receipt))
 
-    application.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=True)
