@@ -1,7 +1,6 @@
 import os
 import json
 import threading
-import asyncio
 from datetime import datetime, timedelta
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -114,7 +113,7 @@ async def numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     save_data(data)
 
-# ================== KEYBOARD BUILDERS ==================
+# ================== KEYBOARD REFRESH ==================
 async def refresh_chunk_keyboard(start_chunk, end_chunk):
     data = load_data()
     keyboard, row = [], []
@@ -149,7 +148,7 @@ async def refresh_all_number_keyboards(bot):
                 reply_markup=markup
             )
         except Exception:
-            continue
+            pass
 
 # ================== PICK NUMBER ==================
 async def pick_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -243,17 +242,24 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     receipt = data["pending_receipts"].pop(number)
-    data["numbers"][number]["status"] = "approved"
+
+    data["numbers"][number] = {
+        "status": "approved",
+        "user_id": receipt["user_id"],
+        "name": receipt["name"],
+        "reserved_at": None
+    }
+
     save_data(data)
 
     await context.bot.send_message(
         chat_id=receipt["user_id"],
-        text=f"🎉 *Payment approved!*\nYour number *{number}* is confirmed.",
+        text=f"🎉 *Payment approved!*\n\nYour number *{number}* is now 🔴 *CONFIRMED*.",
         parse_mode="Markdown"
     )
 
     await refresh_all_number_keyboards(context.bot)
-    await update.message.reply_text(f"✅ Number {number} approved.")
+    await update.message.reply_text(f"✅ Number {number} approved successfully.")
 
 async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != ADMIN_ID or not context.args:
@@ -263,6 +269,7 @@ async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
 
     receipt = data["pending_receipts"].pop(number, None)
+
     data["numbers"][number] = {
         "status": "available",
         "user_id": None,
@@ -275,14 +282,15 @@ async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if receipt:
         await context.bot.send_message(
             chat_id=receipt["user_id"],
-            text=f"❌ Payment rejected. Number *{number}* is now available.",
+            text=f"❌ *Payment rejected*\n\nNumber *{number}* is now 🟢 available.",
             parse_mode="Markdown"
         )
 
     await refresh_all_number_keyboards(context.bot)
+    await update.message.reply_text(f"❌ Number {number} rejected and released.")
 
 # ================== AUTO RELEASE ==================
-async def auto_release_reserved_numbers():
+async def auto_release_reserved_numbers(application):
     while True:
         data = load_data()
         now = datetime.utcnow()
@@ -293,7 +301,7 @@ async def auto_release_reserved_numbers():
                 if now - datetime.fromisoformat(info["reserved_at"]) > timedelta(minutes=RESERVATION_LIMIT_MINUTES):
                     if info["user_id"]:
                         try:
-                            await app.bot.send_message(
+                            await application.bot.send_message(
                                 chat_id=info["user_id"],
                                 text=f"⏳ Your reserved number *{number}* was auto-released.",
                                 parse_mode="Markdown"
@@ -311,9 +319,13 @@ async def auto_release_reserved_numbers():
 
         if changed:
             save_data(data)
-            await refresh_all_number_keyboards(app.bot)
+            await refresh_all_number_keyboards(application.bot)
 
-        await asyncio.sleep(60)
+        await application.bot.sleep(60)
+
+# ================== POST INIT ==================
+async def post_init(application):
+    application.create_task(auto_release_reserved_numbers(application))
 
 # ================== FLASK ==================
 flask_app = Flask(__name__)
@@ -330,7 +342,13 @@ threading.Thread(target=run_flask, daemon=True).start()
 # ================== START BOT ==================
 if __name__ == "__main__":
     print("🎰 Betting bot starting...")
-    app = ApplicationBuilder().token(TOKEN).build()
+
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .post_init(post_init)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("numbers", numbers))
@@ -339,5 +357,4 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("reject", reject))
     app.add_handler(MessageHandler(filters.PHOTO, receipt))
 
-    asyncio.create_task(auto_release_reserved_numbers())
     app.run_polling(drop_pending_updates=True)
