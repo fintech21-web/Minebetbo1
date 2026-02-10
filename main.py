@@ -230,7 +230,7 @@ async def receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data(data)
     await update.message.reply_text("📸 Receipt received. Waiting for admin approval.")
 
-# ================== ADMIN (UPDATED ONLY HERE) ==================
+# ================== ADMIN ==================
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != ADMIN_ID or not context.args:
         return
@@ -243,29 +243,17 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     receipt = data["pending_receipts"].pop(number)
-
-    # FINALIZE NUMBER
-    data["numbers"][number] = {
-        "status": "approved",
-        "user_id": receipt["user_id"],
-        "name": receipt["name"],
-        "reserved_at": None
-    }
-
+    data["numbers"][number]["status"] = "approved"
     save_data(data)
 
     await context.bot.send_message(
         chat_id=receipt["user_id"],
-        text=(
-            "🎉 *Payment Approved!*\n\n"
-            f"🎯 Your number *{number}* is now 🔴 *CONFIRMED*.\n\n"
-            "✅ Thank you for your payment."
-        ),
+        text=f"🎉 *Payment approved!*\nYour number *{number}* is confirmed.",
         parse_mode="Markdown"
     )
 
     await refresh_all_number_keyboards(context.bot)
-    await update.message.reply_text(f"✅ Number {number} approved and confirmed.")
+    await update.message.reply_text(f"✅ Number {number} approved.")
 
 async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != ADMIN_ID or not context.args:
@@ -275,7 +263,6 @@ async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
 
     receipt = data["pending_receipts"].pop(number, None)
-
     data["numbers"][number] = {
         "status": "available",
         "user_id": None,
@@ -288,16 +275,11 @@ async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if receipt:
         await context.bot.send_message(
             chat_id=receipt["user_id"],
-            text=(
-                "❌ *Payment Rejected*\n\n"
-                f"🎯 Number *{number}* has been released and is now 🟢 available.\n\n"
-                "📸 Please contact admin or resend a valid receipt."
-            ),
+            text=f"❌ Payment rejected. Number *{number}* is now available.",
             parse_mode="Markdown"
         )
 
     await refresh_all_number_keyboards(context.bot)
-    await update.message.reply_text(f"❌ Number {number} rejected and released.")
 
 # ================== AUTO RELEASE ==================
 async def auto_release_reserved_numbers():
