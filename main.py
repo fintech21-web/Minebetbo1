@@ -1,6 +1,7 @@
 import os
 import json
 import threading
+import asyncio
 from datetime import datetime, timedelta
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -113,7 +114,7 @@ async def numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     save_data(data)
 
-# ================== KEYBOARD REFRESH ==================
+# ================== KEYBOARD BUILDERS ==================
 async def refresh_chunk_keyboard(start_chunk, end_chunk):
     data = load_data()
     keyboard, row = [], []
@@ -148,7 +149,7 @@ async def refresh_all_number_keyboards(bot):
                 reply_markup=markup
             )
         except Exception:
-            pass
+            continue
 
 # ================== PICK NUMBER ==================
 async def pick_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -229,7 +230,7 @@ async def receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data(data)
     await update.message.reply_text("📸 Receipt received. Waiting for admin approval.")
 
-# ================== ADMIN ==================
+# ================== ADMIN (UPDATED ONLY HERE) ==================
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != ADMIN_ID or not context.args:
         return
@@ -243,6 +244,7 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     receipt = data["pending_receipts"].pop(number)
 
+    # FINALIZE NUMBER
     data["numbers"][number] = {
         "status": "approved",
         "user_id": receipt["user_id"],
@@ -254,12 +256,16 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(
         chat_id=receipt["user_id"],
-        text=f"🎉 *Payment approved!*\n\nYour number *{number}* is now 🔴 *CONFIRMED*.",
+        text=(
+            "🎉 *Payment Approved!*\n\n"
+            f"🎯 Your number *{number}* is now 🔴 *CONFIRMED*.\n\n"
+            "✅ Thank you for your payment."
+        ),
         parse_mode="Markdown"
     )
 
     await refresh_all_number_keyboards(context.bot)
-    await update.message.reply_text(f"✅ Number {number} approved successfully.")
+    await update.message.reply_text(f"✅ Number {number} approved and confirmed.")
 
 async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != ADMIN_ID or not context.args:
@@ -282,7 +288,11 @@ async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if receipt:
         await context.bot.send_message(
             chat_id=receipt["user_id"],
-            text=f"❌ *Payment rejected*\n\nNumber *{number}* is now 🟢 available.",
+            text=(
+                "❌ *Payment Rejected*\n\n"
+                f"🎯 Number *{number}* has been released and is now 🟢 available.\n\n"
+                "📸 Please contact admin or resend a valid receipt."
+            ),
             parse_mode="Markdown"
         )
 
@@ -290,7 +300,7 @@ async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"❌ Number {number} rejected and released.")
 
 # ================== AUTO RELEASE ==================
-async def auto_release_reserved_numbers(application):
+async def auto_release_reserved_numbers():
     while True:
         data = load_data()
         now = datetime.utcnow()
@@ -301,7 +311,7 @@ async def auto_release_reserved_numbers(application):
                 if now - datetime.fromisoformat(info["reserved_at"]) > timedelta(minutes=RESERVATION_LIMIT_MINUTES):
                     if info["user_id"]:
                         try:
-                            await application.bot.send_message(
+                            await app.bot.send_message(
                                 chat_id=info["user_id"],
                                 text=f"⏳ Your reserved number *{number}* was auto-released.",
                                 parse_mode="Markdown"
@@ -319,13 +329,9 @@ async def auto_release_reserved_numbers(application):
 
         if changed:
             save_data(data)
-            await refresh_all_number_keyboards(application.bot)
+            await refresh_all_number_keyboards(app.bot)
 
-        await application.bot.sleep(60)
-
-# ================== POST INIT ==================
-async def post_init(application):
-    application.create_task(auto_release_reserved_numbers(application))
+        await asyncio.sleep(60)
 
 # ================== FLASK ==================
 flask_app = Flask(__name__)
@@ -342,13 +348,7 @@ threading.Thread(target=run_flask, daemon=True).start()
 # ================== START BOT ==================
 if __name__ == "__main__":
     print("🎰 Betting bot starting...")
-
-    app = (
-        ApplicationBuilder()
-        .token(TOKEN)
-        .post_init(post_init)
-        .build()
-    )
+    app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("numbers", numbers))
@@ -357,4 +357,5 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("reject", reject))
     app.add_handler(MessageHandler(filters.PHOTO, receipt))
 
+    asyncio.create_task(auto_release_reserved_numbers())
     app.run_polling(drop_pending_updates=True)
