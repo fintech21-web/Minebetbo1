@@ -21,7 +21,7 @@ DATA_FILE = "data.json"
 
 TOTAL_NUMBERS = 1000
 CHUNK_SIZE = 100
-RESERVATION_LIMIT_MINUTES = 60
+RESERVATION_LIMIT_MINUTES = 60  # Auto-release after 1 hour
 
 PRICE_TEXT = (
     "💰 *Payment Instructions*\n\n"
@@ -34,11 +34,7 @@ PRICE_TEXT = (
 # ================== DATA HELPERS ==================
 def load_data():
     if not os.path.exists(DATA_FILE):
-        return {
-            "numbers": {},
-            "pending_receipts": {},
-            "number_messages": []
-        }
+        return {"numbers": {}, "pending_receipts": {}}
     with open(DATA_FILE, "r") as f:
         return json.load(f)
 
@@ -50,12 +46,7 @@ def init_numbers(data):
     for i in range(1, TOTAL_NUMBERS + 1):
         data["numbers"].setdefault(
             str(i),
-            {
-                "status": "available",
-                "user_id": None,
-                "name": None,
-                "reserved_at": None
-            }
+            {"status": "available", "user_id": None, "name": None}
         )
 
 # ================== START ==================
@@ -72,21 +63,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     init_numbers(data)
+    save_data(data)
 
     all_numbers = list(range(1, TOTAL_NUMBERS + 1))
-    chunks = [all_numbers[i:i + CHUNK_SIZE] for i in range(0, TOTAL_NUMBERS, CHUNK_SIZE)]
+    chunks = [
+        all_numbers[i:i + CHUNK_SIZE]
+        for i in range(0, TOTAL_NUMBERS, CHUNK_SIZE)
+    ]
 
     for idx, chunk in enumerate(chunks, start=1):
         keyboard, row = [], []
 
         for num in chunk:
             info = data["numbers"][str(num)]
+
             if info["status"] == "approved":
-                text, cb = f"🔴 {num}", "taken"
+                text = f"🔴 {num}"
+                cb = "taken"
             elif info["status"] == "reserved":
-                text, cb = f"🟡 {num}", "taken"
+                text = f"🟡 {num}"
+                cb = "taken"
             else:
-                text, cb = f"🟢 {num}", f"pick_{num}"
+                text = f"🟢 {num}"
+                cb = f"pick_{num}"
 
             row.append(InlineKeyboardButton(text, callback_data=cb))
             if len(row) == 5:
@@ -99,59 +98,13 @@ async def numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
         start_n = (idx - 1) * CHUNK_SIZE + 1
         end_n = min(idx * CHUNK_SIZE, TOTAL_NUMBERS)
 
-        sent = await update.message.reply_text(
+        await update.message.reply_text(
             f"📄 *Numbers {start_n} – {end_n}*",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown"
         )
 
-        data["number_messages"].append({
-            "chat_id": sent.chat_id,
-            "message_id": sent.message_id,
-            "start": start_n,
-            "end": end_n
-        })
-
-    save_data(data)
-
-# ================== KEYBOARD BUILDERS ==================
-async def refresh_chunk_keyboard(start_chunk, end_chunk):
-    data = load_data()
-    keyboard, row = [], []
-
-    for n in range(start_chunk, end_chunk + 1):
-        info = data["numbers"][str(n)]
-        if info["status"] == "approved":
-            text, cb = f"🔴 {n}", "taken"
-        elif info["status"] == "reserved":
-            text, cb = f"🟡 {n}", "taken"
-        else:
-            text, cb = f"🟢 {n}", f"pick_{n}"
-
-        row.append(InlineKeyboardButton(text, callback_data=cb))
-        if len(row) == 5:
-            keyboard.append(row)
-            row = []
-
-    if row:
-        keyboard.append(row)
-
-    return InlineKeyboardMarkup(keyboard)
-
-async def refresh_all_number_keyboards(bot):
-    data = load_data()
-    for msg in data.get("number_messages", []):
-        try:
-            markup = await refresh_chunk_keyboard(msg["start"], msg["end"])
-            await bot.edit_message_reply_markup(
-                chat_id=msg["chat_id"],
-                message_id=msg["message_id"],
-                reply_markup=markup
-            )
-        except Exception:
-            continue
-
-# ================== PICK NUMBER ==================
+# ================== HANDLE NUMBER TAP ==================
 async def pick_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -163,22 +116,56 @@ async def pick_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
 
     data = load_data()
-    info = data["numbers"][number]
+    info = data["numbers"].get(number)
 
     if info["status"] != "available":
         await query.message.reply_text("⛔ This number is not available.")
         return
 
+    # Reserve the number
     data["numbers"][number] = {
         "status": "reserved",
         "user_id": user.id,
         "name": user.full_name,
-        "reserved_at": datetime.utcnow().isoformat()
+        "reserved_at": datetime.utcnow().isoformat(),
     }
-
     save_data(data)
-    await refresh_all_number_keyboards(context.bot)
 
+    # Auto-refresh buttons for this chunk
+    num_int = int(number)
+    start_chunk = ((num_int - 1) // CHUNK_SIZE) * CHUNK_SIZE + 1
+    end_chunk = min(start_chunk + CHUNK_SIZE - 1, TOTAL_NUMBERS)
+    chunk_numbers = list(range(start_chunk, end_chunk + 1))
+
+    keyboard, row = [], []
+
+    for n in chunk_numbers:
+        n_info = data["numbers"][str(n)]
+        if n_info["status"] == "approved":
+            text = f"🔴 {n}"
+            cb = "taken"
+        elif n_info["status"] == "reserved":
+            text = f"🟡 {n}"
+            cb = "taken"
+        else:
+            text = f"🟢 {n}"
+            cb = f"pick_{n}"
+
+        row.append(InlineKeyboardButton(text, callback_data=cb))
+        if len(row) == 5:
+            keyboard.append(row)
+            row = []
+
+    if row:
+        keyboard.append(row)
+
+    await query.message.edit_text(
+        f"📄 *Numbers {start_chunk} – {end_chunk}*",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+    # Inform user of reservation and payment
     await query.message.reply_text(
         f"✅ *Number Reserved*\n\n"
         f"🎯 Number: *{number}*\n"
@@ -195,6 +182,7 @@ async def receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     data = load_data()
 
+    # Find all reserved numbers for this user
     reserved_numbers = [
         n for n, v in data["numbers"].items()
         if v["user_id"] == user.id and v["status"] == "reserved"
@@ -204,14 +192,13 @@ async def receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ You have no reserved numbers.")
         return
 
-    photo = update.message.photo[-1]
-
     for number in reserved_numbers:
+        photo = update.message.photo[-1]
         data["pending_receipts"][number] = {
             "user_id": user.id,
             "name": user.full_name,
             "file_id": photo.file_id,
-            "submitted_at": datetime.utcnow().isoformat()
+            "submitted_at": datetime.utcnow().isoformat(),
         }
 
         await context.bot.send_photo(
@@ -224,7 +211,7 @@ async def receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"/approve {number}\n"
                 f"/reject {number}"
             ),
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
 
     save_data(data)
@@ -246,14 +233,13 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["numbers"][number]["status"] = "approved"
     save_data(data)
 
+    await update.message.reply_text(f"✅ Number {number} approved.")
+
     await context.bot.send_message(
         chat_id=receipt["user_id"],
         text=f"🎉 *Payment approved!*\nYour number *{number}* is confirmed.",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
-
-    await refresh_all_number_keyboards(context.bot)
-    await update.message.reply_text(f"✅ Number {number} approved.")
 
 async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != ADMIN_ID or not context.args:
@@ -267,7 +253,6 @@ async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "status": "available",
         "user_id": None,
         "name": None,
-        "reserved_at": None
     }
 
     save_data(data)
@@ -275,45 +260,29 @@ async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if receipt:
         await context.bot.send_message(
             chat_id=receipt["user_id"],
-            text=f"❌ Payment rejected. Number *{number}* is now available.",
-            parse_mode="Markdown"
+            text="❌ Payment rejected. Your number has been released."
         )
 
-    await refresh_all_number_keyboards(context.bot)
-
-# ================== AUTO RELEASE ==================
+# ================== AUTO-RELEASE TASK ==================
 async def auto_release_reserved_numbers():
     while True:
         data = load_data()
-        now = datetime.utcnow()
         changed = False
-
+        now = datetime.utcnow()
         for number, info in data["numbers"].items():
-            if info["status"] == "reserved" and info["reserved_at"]:
-                if now - datetime.fromisoformat(info["reserved_at"]) > timedelta(minutes=RESERVATION_LIMIT_MINUTES):
-                    if info["user_id"]:
-                        try:
-                            await app.bot.send_message(
-                                chat_id=info["user_id"],
-                                text=f"⏳ Your reserved number *{number}* was auto-released.",
-                                parse_mode="Markdown"
-                            )
-                        except Exception:
-                            pass
-
+            if info["status"] == "reserved":
+                reserved_at = datetime.fromisoformat(info["reserved_at"])
+                if now - reserved_at > timedelta(minutes=RESERVATION_LIMIT_MINUTES):
+                    # Release the number
                     data["numbers"][number] = {
                         "status": "available",
                         "user_id": None,
                         "name": None,
-                        "reserved_at": None
                     }
                     changed = True
-
         if changed:
             save_data(data)
-            await refresh_all_number_keyboards(app.bot)
-
-        await asyncio.sleep(60)
+        await asyncio.sleep(60)  # check every minute
 
 # ================== FLASK ==================
 flask_app = Flask(__name__)
@@ -323,7 +292,11 @@ def home():
     return "Betting bot running"
 
 def run_flask():
-    flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)), use_reloader=False)
+    flask_app.run(
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", 10000)),
+        use_reloader=False,
+    )
 
 threading.Thread(target=run_flask, daemon=True).start()
 
@@ -339,5 +312,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("reject", reject))
     app.add_handler(MessageHandler(filters.PHOTO, receipt))
 
+    # Start auto-release background task
     asyncio.create_task(auto_release_reserved_numbers())
+
     app.run_polling(drop_pending_updates=True)
